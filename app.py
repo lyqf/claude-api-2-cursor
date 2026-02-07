@@ -37,6 +37,7 @@ def create_app():
             token = request.headers.get('x-api-key', '')
 
         if token != Config.ACCESS_API_KEY:
+            logger.warning(f'[auth] rejected {request.path}')
             return jsonify({
                 'error': {'message': 'Invalid API key', 'type': 'authentication_error'}
             }), 401
@@ -50,6 +51,9 @@ def create_app():
         """OpenAI 兼容接口 — 主路由"""
         payload = request.get_json(force=True)
         is_stream = payload.get('stream', False)
+        model = payload.get('model', 'unknown')
+        msg_count = len(payload.get('messages', []))
+        logger.info(f'[chat] model={model} stream={is_stream} messages={msg_count}')
 
         # 转换请求
         anthropic_payload = openai_to_anthropic_request(payload)
@@ -71,6 +75,10 @@ def create_app():
     def messages_passthrough():
         """Anthropic 原生格式透传"""
         payload = request.get_json(force=True)
+        model = payload.get('model', 'unknown')
+        is_stream = payload.get('stream', False)
+        logger.info(f'[passthrough] model={model} stream={is_stream}')
+
         headers = _prepare_headers()
         headers['Content-Type'] = 'application/json'
 
@@ -100,6 +108,7 @@ def create_app():
                     content_type=resp.headers.get('Content-Type', 'application/json'),
                 )
         except requests.RequestException as e:
+            logger.error(f'[passthrough] request error: {e}')
             return jsonify({'error': {'message': str(e), 'type': 'proxy_error'}}), 502
 
     def _handle_non_stream(target_url, headers, anthropic_payload):
@@ -113,6 +122,7 @@ def create_app():
             )
 
             if resp.status_code != 200:
+                logger.warning(f'[chat] upstream error {resp.status_code}')
                 return Response(
                     resp.content,
                     status=resp.status_code,
@@ -121,9 +131,12 @@ def create_app():
 
             anthropic_data = resp.json()
             openai_response = anthropic_to_openai_response(anthropic_data)
+            usage = openai_response.get('usage', {})
+            logger.info(f'[chat] done prompt={usage.get("prompt_tokens", 0)} completion={usage.get("completion_tokens", 0)}')
             return jsonify(openai_response)
 
         except requests.RequestException as e:
+            logger.error(f'[chat] request error: {e}')
             return jsonify({'error': {'message': str(e), 'type': 'proxy_error'}}), 502
 
     def _handle_stream(target_url, headers, anthropic_payload):
@@ -144,6 +157,7 @@ def create_app():
 
                 if resp.status_code != 200:
                     error_body = resp.content.decode('utf-8', errors='replace')
+                    logger.warning(f'[stream] upstream error {resp.status_code}: {error_body[:200]}')
                     error_chunk = json.dumps({
                         'error': {
                             'message': f'Upstream error {resp.status_code}: {error_body}',
@@ -180,6 +194,7 @@ def create_app():
                 yield 'data: [DONE]\n\n'
 
             except requests.RequestException as e:
+                logger.error(f'[stream] request error: {e}')
                 error_chunk = json.dumps({
                     'error': {'message': str(e), 'type': 'proxy_error'}
                 })
