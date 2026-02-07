@@ -17,9 +17,11 @@ if __name__ == '__main__':
     print(f'Proxy service starting on 0.0.0.0:{Config.PROXY_PORT}')
     print(f'Target: {Config.PROXY_TARGET_URL}')
 
-    from gevent.pywsgi import WSGIServer
-    server = WSGIServer(
-        ('0.0.0.0', Config.PROXY_PORT),
+    from waitress import serve
+    serve(
         app,
+        host='0.0.0.0',
+        port=Config.PROXY_PORT,
+        channel_timeout=Config.API_TIMEOUT,
+        send_bytes=1,
     )
-    server.serve_forever()
