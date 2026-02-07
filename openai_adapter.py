@@ -159,6 +159,9 @@ def _convert_content(msg):
                             'type': 'image',
                             'source': {'type': 'url', 'url': url}
                         })
+                elif part_type in ('tool_use', 'tool_result'):
+                    # Cursor 可能直接发送 Anthropic 原生格式的 block，直接透传
+                    blocks.append(part)
         return blocks
     return str(content)
 
