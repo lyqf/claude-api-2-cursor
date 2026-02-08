@@ -1,15 +1,82 @@
 # Claude API 2 Cursor
 
-将 Cursor 的 OpenAI 格式请求转换为 Anthropic 格式，通过 Claude 中转站 API 实现 Cursor 使用 Claude 模型。
+让 Cursor 用上 Claude Code 中转站 API。
 
-## 功能
+## 思路
 
-- OpenAI ↔ Anthropic 请求/响应格式双向转换
-- 流式 SSE 输出
-- Tool Use 支持（兼容 Cursor 扁平格式和 OpenAI 标准格式）
-- Tool Use 智能修复（引号容错、字段映射）
-- 接入鉴权（ACCESS_API_KEY）
-- Anthropic 原生格式透传（`/v1/messages`）
+本项目作为中转代理，实现 Cursor 与 Claude API 之间的协议转换。核心流程如下：
+
+```
+┌─────────────┐
+│   Cursor    │
+│   客户端     │
+└──────┬──────┘
+       │ OpenAI 格式请求
+       │ POST /v1/chat/completions
+       ▼
+┌─────────────────────────────────────────────────────────┐
+│                    本代理服务                            │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  1. 接入鉴权 (ACCESS_API_KEY)                     │  │
+│  └───────────────┬───────────────────────────────────┘  │
+│                  ▼                                       │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  2. 请求格式转换                                   │  │
+│  │     • messages 格式映射                           │  │
+│  │     • system 提取为独立字段                       │  │
+│  │     • tools 转换为 Anthropic 格式                 │  │
+│  │     • Tool Use 智能修复（引号容错）               │  │
+│  └───────────────┬───────────────────────────────────┘  │
+│                  ▼                                       │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  3. 转发到 Claude 中转站                          │  │
+│  │     • 注入 API Key (x-api-key / Bearer)          │  │
+│  │     • 设置 anthropic-version 头                   │  │
+│  └───────────────┬───────────────────────────────────┘  │
+│                  │                                       │
+└──────────────────┼───────────────────────────────────────┘
+                   │ Anthropic 格式请求
+                   ▼
+            ┌──────────────┐
+            │ Claude 中转站 │
+            │  (Relay API)  │
+            └──────┬───────┘
+                   │ 流式响应 (SSE)
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│                    本代理服务                            │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  4. 响应格式转换                                   │  │
+│  │     • content_block_delta → delta.content        │  │
+│  │     • tool_use → function_call                   │  │
+│  │     • 流式事件转 OpenAI SSE 格式                  │  │
+│  └───────────────┬───────────────────────────────────┘  │
+│                  │                                       │
+└──────────────────┼───────────────────────────────────────┘
+                   │ OpenAI 格式流式响应
+                   ▼
+            ┌─────────────┐
+            │   Cursor    │
+            │   客户端     │
+            └─────────────┘
+```
+
+### 关键转换点
+
+**请求转换 (OpenAI → Anthropic)**
+- `messages[].role: "system"` → 提取为顶层 `system` 字段
+- `tools[].function` → `tools[].input_schema`
+- `tool_choice: "auto"` → `tool_choice: {"type": "auto"}`
+
+**响应转换 (Anthropic → OpenAI)**
+- `content_block_start` → 初始化 `choices[0].delta`
+- `content_block_delta` → `delta.content` / `delta.function_call`
+- `message_stop` → `[DONE]` 事件
+
+**Tool Use 智能修复**
+- 自动修复 JSON 中的引号错误
+- 兼容 Cursor 扁平化的 `tool_uses` 格式
+- 字段名映射容错（`tool_name` ↔ `name`）
 
 ## 快速开始
 
@@ -51,8 +118,10 @@ python start.py
 ### 4. Cursor 配置
 
 在 Cursor 设置中：
-- **Base URL**: `http://localhost:3029`（或你的服务器地址）
+- **Base URL**: `http://[你的服务器 IP]:3029` 或 `http://[你的域名]/v1`
 - **API Key**: 填写 `ACCESS_API_KEY` 的值
+
+注意，Cursor 的 Base URL 不能是 `localhost`、`127.0.0.1` 等本地地址，需要是你的服务器 IP 或域名。如果想本地部署，可以结合内网穿透工具使用（如花生壳、ngrok、frp 等），将本地服务映射到公网地址。
 
 ## Docker 部署
 
